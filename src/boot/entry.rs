@@ -18,7 +18,7 @@ fn align_up(addr: usize, align: usize) -> usize {
 
 /// Kernel entry point. Reached from `_start` (boot.S) via `mret` in M-mode.
 #[unsafe(no_mangle)]
-pub extern "C" fn kmain() -> ! {
+pub extern "C" fn kinit() -> ! {
     let uart = Uart::new(UART_BASE);
     uart.init();
 

@@ -9,4 +9,4 @@ pub mod linker;
 pub mod mm;
 
 pub use boot::abort::abort;
-pub use boot::entry::{kmain, skmain};
+pub use boot::entry::{kinit, skmain};

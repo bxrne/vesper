@@ -42,7 +42,7 @@ _start:
 	# have a real trap handler yet; interrupts get enabled in a later chapter.
 	li	t0, (0b11 << 11) | (1 << 7)
 	csrw	mstatus, t0
-	la	t1, kmain
+	la	t1, kinit
 	csrw	mepc, t1
 	la	t2, asm_trap_vector
 	csrw	mtvec, t2
@@ -67,4 +67,3 @@ _start:
 .global asm_trap_vector
 asm_trap_vector:
 	mret
-
