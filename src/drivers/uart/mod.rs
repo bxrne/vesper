@@ -105,22 +105,3 @@ impl fmt::Write for Uart {
         Ok(())
     }
 }
-
-/// Print to the UART. Mirrors `std::print!`.
-#[macro_export]
-macro_rules! print {
-    ($($args:tt)*) => {{
-        use core::fmt::Write as _;
-        let _ = write!(
-            $crate::uart::Uart::new($crate::uart::UART_BASE),
-            $($args)*
-        );
-    }};
-}
-
-/// Print to the UART with a trailing CRLF.
-#[macro_export]
-macro_rules! println {
-    () => ($crate::print!("\r\n"));
-    ($($args:tt)*) => ($crate::print!("{}\r\n", format_args!($($args)*)));
-}

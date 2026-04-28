@@ -1,9 +1,9 @@
-use crate::page::{Entry, PAGE_SIZE, PteFlags, Table, deallocate, zallocate};
-use core::arch::asm;
+use crate::mm::alloc::page_frame::{PAGE_SIZE, deallocate, zallocate};
+use crate::mm::paging::sv39::types::{Entry, PteFlags, Table};
 use core::ptr::NonNull;
 
-pub fn map(root: &mut Table, vaddr: usize, paddr: usize, bits: i64, level: usize) {
-    assert!(bits & 0xe != 0); // make sure R|W|E were provided
+pub fn map(root: &mut Table, vaddr: usize, paddr: usize, bits: PteFlags, level: usize) {
+    assert!(bits.bits() & PteFlags::RWX.bits() != 0); // make sure R|W|E were provided
 
     // extract the VPN from the virtual address. The VPN is the index into the page tables at each level, so we need to split it into three 9-bit chunks.
     let vpn = [
@@ -32,7 +32,7 @@ pub fn map(root: &mut Table, vaddr: usize, paddr: usize, bits: i64, level: usize
             match page {
                 Some(p) => {
                     let addr = p.as_ptr() as usize as i64;
-                    v.set_entry((addr >> 2) | PteFlags::Valid.bits())
+                    v.set_entry((addr >> 2) | PteFlags::VALID.bits())
                 }
                 None => panic!("failed to allocate page for page table"),
             }
@@ -42,11 +42,11 @@ pub fn map(root: &mut Table, vaddr: usize, paddr: usize, bits: i64, level: usize
     }
     // When we get here, we should be at VPN[0] and v should be pointing to
     // our entry.
-    let entry = (ppn[2] << 28) as i64 |   // PPN[2] = [53:28]
-			(ppn[1] << 19) as i64 |   // PPN[1] = [27:19]
-			(ppn[0] << 10) as i64 |   // PPN[0] = [18:10]
-			bits |                    // Specified bits, such as User, Read, Write, etc
-			PteFlags::Valid.bits(); // Valid bit
+    let entry = (ppn[2] << 28) as i64 | // PPN[2] = [53:28]
+			(ppn[1] << 19) as i64 | // PPN[1] = [27:19]
+			(ppn[0] << 10) as i64 | // PPN[0] = [18:10]
+			bits.bits() |           // Specified bits, such as User, Read, Write, etc
+			PteFlags::VALID.bits(); // Valid bit
     v.set_entry(entry);
 }
 
@@ -117,40 +117,10 @@ pub fn v2p(root: &Table, vaddr: usize) -> Option<usize> {
     None
 }
 
-pub fn id_map_range(root: &mut Table, start: usize, end: usize, bits: i64) {
+pub fn id_map_range(root: &mut Table, start: usize, end: usize, bits: PteFlags) {
     assert!(start.is_multiple_of(PAGE_SIZE));
     assert!(end.is_multiple_of(PAGE_SIZE));
     for addr in (start..end).step_by(PAGE_SIZE) {
         map(root, addr, addr, bits, 0);
-    }
-}
-
-#[inline]
-pub fn make_satp_sv39(root_table_addr: usize) -> usize {
-    let root_ppn = root_table_addr >> 12;
-    (8usize << 60) | root_ppn
-}
-
-/// Enter supervisor mode with Sv39 paging enabled.
-///
-/// # Safety
-///
-/// - `satp_val` must point at a valid level-2 page table (physical address in PPN field).
-/// - `s_entry` must be a valid supervisor-mode entry point.
-pub unsafe fn enter_sv39(satp_val: usize, s_entry: extern "C" fn() -> !) -> ! {
-    let s_entry_addr = s_entry as usize;
-    unsafe {
-        asm!(
-            "csrw satp, {satp}",
-            "sfence.vma x0, x0",
-            "csrw mepc, {mepc}",
-            // MPP=01 (Supervisor), MPIE=1. Leave MIE=0 for now.
-            "li   t0, (1 << 11) | (1 << 7)",
-            "csrw mstatus, t0",
-            "mret",
-            satp = in(reg) satp_val,
-            mepc = in(reg) s_entry_addr,
-            options(noreturn)
-        )
     }
 }

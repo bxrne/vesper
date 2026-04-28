@@ -1,13 +1,9 @@
 //! Naive byte-per-page allocator.
 
-use core::ptr::{NonNull, addr_of};
+use crate::linker;
+use core::ptr::NonNull;
 use core::slice;
 use core::sync::atomic::{AtomicUsize, Ordering};
-
-unsafe extern "C" {
-    static _heap_start: usize;
-    static _heap_size: usize;
-}
 
 pub const PAGE_ORDER: usize = 12;
 pub const PAGE_SIZE: usize = 1 << PAGE_ORDER; // 4 KiB
@@ -50,24 +46,15 @@ impl PageDesc {
     }
 }
 
-// `_heap_start` and `_heap_size` are addresses baked in by the linker
-// script, we have to take their address, not their value.
-#[inline]
-fn heap_start() -> usize {
-    addr_of!(_heap_start) as usize
-}
-#[inline]
-fn heap_size() -> usize {
-    addr_of!(_heap_size) as usize
-}
-
 /// Borrow the descriptor table as a slice. Each entry is one byte and
 /// describes the data page at `alloc_start() + i * PAGE_SIZE`.
 ///
 /// Callers must not hand out overlapping `&mut` slices to the table.
 unsafe fn descriptors<'a>() -> &'a mut [PageDesc] {
-    let n = heap_size() / PAGE_SIZE;
-    unsafe { slice::from_raw_parts_mut(heap_start() as *mut PageDesc, n) }
+    let heap_start = linker::heap_start();
+    let heap_size_bytes = linker::heap_size();
+    let n = heap_size_bytes / PAGE_SIZE;
+    unsafe { slice::from_raw_parts_mut(heap_start as *mut PageDesc, n) }
 }
 
 /// Initialise the allocator. Must be called once, before any
@@ -79,8 +66,9 @@ pub fn init() {
     }
     // Reserve room for the descriptor table at the front of the heap,
     // then round up so the data pages are themselves page-aligned.
+    let heap_start = linker::heap_start();
     ALLOC_START.store(
-        (heap_start() + table.len()).next_multiple_of(PAGE_SIZE),
+        (heap_start + table.len()).next_multiple_of(PAGE_SIZE),
         Ordering::Relaxed,
     );
 }
@@ -128,7 +116,10 @@ pub fn zallocate(pages: usize) -> Option<NonNull<u8>> {
 pub unsafe fn deallocate(ptr: NonNull<u8>) {
     let addr = ptr.as_ptr() as usize;
     let start = alloc_start();
-    assert!(addr >= start && addr < heap_start() + heap_size());
+
+    let heap_start = linker::heap_start();
+    let heap_end = heap_start + linker::heap_size();
+    assert!(addr >= start && addr < heap_end);
 
     let table = unsafe { descriptors() };
     let mut i = (addr - start) / PAGE_SIZE;
@@ -143,77 +134,3 @@ pub unsafe fn deallocate(ptr: NonNull<u8>) {
     );
     table[i].clear();
 }
-
-// === Sv39 page table structures ===
-
-#[repr(C)]
-pub struct Table {
-    pub entries: [Entry; 512],
-}
-
-impl Table {
-    #[inline]
-    pub const fn len() -> usize {
-        512
-    }
-}
-
-#[repr(transparent)]
-#[derive(Copy, Clone)]
-pub struct Entry {
-    entry: i64,
-}
-
-impl Entry {
-    #[inline]
-    pub fn get_entry(&self) -> i64 {
-        self.entry
-    }
-
-    #[inline]
-    pub fn set_entry(&mut self, entry: i64) {
-        self.entry = entry;
-    }
-
-    #[inline]
-    pub fn is_valid(&self) -> bool {
-        (self.get_entry() & PteFlags::Valid.bits()) != 0
-    }
-
-    #[inline]
-    pub fn is_invalid(&self) -> bool {
-        !self.is_valid()
-    }
-
-    // A leaf has one or more RWX bits set.
-    #[inline]
-    pub fn is_leaf(&self) -> bool {
-        (self.get_entry() & PTE_RWX_MASK) != 0
-    }
-
-    #[inline]
-    pub fn is_branch(&self) -> bool {
-        !self.is_leaf()
-    }
-}
-
-#[repr(i64)]
-pub enum PteFlags {
-    Valid = 1 << 0,
-    Read = 1 << 1,
-    Write = 1 << 2,
-    Execute = 1 << 3,
-    User = 1 << 4,
-    Global = 1 << 5,
-    Accessed = 1 << 6,
-    Dirty = 1 << 7,
-}
-
-impl PteFlags {
-    #[inline]
-    pub const fn bits(self) -> i64 {
-        self as i64
-    }
-}
-
-pub const PTE_RWX_MASK: i64 = 0xe;
