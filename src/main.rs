@@ -4,6 +4,7 @@
 use core::arch::{asm, global_asm};
 use core::panic::PanicInfo;
 
+pub mod page;
 pub mod uart;
 
 use uart::{UART_BASE, Uart};
@@ -23,17 +24,9 @@ pub extern "C" fn abort() -> ! {
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
-    print!("kernel panic: ");
-    if let Some(loc) = info.location() {
-        println!(
-            "{}:{}:{}: {}",
-            loc.file(),
-            loc.line(),
-            loc.column(),
-            info.message()
-        );
-    } else {
-        println!("{}", info.message());
+    match info.location() {
+        Some(loc) => println!("kernel panic at {}: {}", loc, info.message()),
+        None => println!("kernel panic: {}", info.message()),
     }
     abort();
 }
@@ -47,30 +40,35 @@ pub extern "C" fn kmain() -> ! {
     println!();
     println!("vesper booted successfully!");
 
-    // Echo loop — type into the QEMU console and watch it come back.
-    // Ctrl-A, x to exit QEMU.
+    echo_loop(&uart);
+}
+
+/// Polled UART echo loop with minimal ANSI escape handling.
+fn echo_loop(uart: &Uart) -> ! {
     loop {
         let Some(byte) = uart.get() else { continue };
         match byte {
-            // CR -> CRLF so the prompt looks right under -nographic
+            // CR -> CRLF so the prompt looks right on a raw serial console.
             b'\r' => println!(),
-            // backspace / DEL: erase the previous glyph
+            // backspace / DEL: erase the previous glyph.
             0x08 | 0x7f => print!("\x08 \x08"),
-            // ANSI escape sequence — for arrows the terminal sends ESC `[` X.
+            // ANSI escape — for arrow keys the terminal sends ESC `[` X.
             // The follow-up bytes haven't necessarily landed yet, so block.
-            0x1b => {
-                if uart.get_blocking() != b'[' {
-                    continue;
-                }
-                match uart.get_blocking() {
-                    b'A' => println!("up arrow!"),
-                    b'B' => println!("down arrow!"),
-                    b'C' => println!("right arrow!"),
-                    b'D' => println!("left arrow!"),
-                    _ => {}
-                }
-            }
+            0x1b => handle_escape(uart),
             b => print!("{}", b as char),
         }
+    }
+}
+
+fn handle_escape(uart: &Uart) {
+    if uart.get_blocking() != b'[' {
+        return;
+    }
+    match uart.get_blocking() {
+        b'A' => println!("up arrow!"),
+        b'B' => println!("down arrow!"),
+        b'C' => println!("right arrow!"),
+        b'D' => println!("left arrow!"),
+        _ => {}
     }
 }

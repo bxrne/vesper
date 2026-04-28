@@ -44,7 +44,9 @@ pub struct Uart {
 impl Uart {
     /// Construct a UART handle for the given MMIO base address.
     pub const fn new(base: usize) -> Self {
-        Self { base: base as *mut u8 }
+        Self {
+            base: base as *mut u8,
+        }
     }
 
     /// Configure the UART: 8N1, FIFO enabled, RX interrupt enabled.
