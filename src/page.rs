@@ -22,9 +22,9 @@ fn alloc_start() -> usize {
 
 /// One byte of allocator metadata per data page.
 #[repr(transparent)]
-pub struct Page(u8);
+struct PageDesc(u8);
 
-impl Page {
+impl PageDesc {
     pub const TAKEN: u8 = 1 << 0;
     pub const LAST: u8 = 1 << 1;
 
@@ -65,9 +65,9 @@ fn heap_size() -> usize {
 /// describes the data page at `alloc_start() + i * PAGE_SIZE`.
 ///
 /// Callers must not hand out overlapping `&mut` slices to the table.
-unsafe fn descriptors<'a>() -> &'a mut [Page] {
+unsafe fn descriptors<'a>() -> &'a mut [PageDesc] {
     let n = heap_size() / PAGE_SIZE;
-    unsafe { slice::from_raw_parts_mut(heap_start() as *mut Page, n) }
+    unsafe { slice::from_raw_parts_mut(heap_start() as *mut PageDesc, n) }
 }
 
 /// Initialise the allocator. Must be called once, before any
@@ -120,6 +120,11 @@ pub fn zallocate(pages: usize) -> Option<NonNull<u8>> {
 ///
 /// `ptr` must be a pointer returned by `allocate` or `zallocate` that
 /// has not already been freed.
+///
+/// # Safety
+///
+/// The caller must ensure `ptr` was returned by `allocate`/`zallocate`, is the
+/// start of a currently-allocated run, and has not been freed already.
 pub unsafe fn deallocate(ptr: NonNull<u8>) {
     let addr = ptr.as_ptr() as usize;
     let start = alloc_start();
@@ -138,3 +143,77 @@ pub unsafe fn deallocate(ptr: NonNull<u8>) {
     );
     table[i].clear();
 }
+
+// === Sv39 page table structures ===
+
+#[repr(C)]
+pub struct Table {
+    pub entries: [Entry; 512],
+}
+
+impl Table {
+    #[inline]
+    pub const fn len() -> usize {
+        512
+    }
+}
+
+#[repr(transparent)]
+#[derive(Copy, Clone)]
+pub struct Entry {
+    entry: i64,
+}
+
+impl Entry {
+    #[inline]
+    pub fn get_entry(&self) -> i64 {
+        self.entry
+    }
+
+    #[inline]
+    pub fn set_entry(&mut self, entry: i64) {
+        self.entry = entry;
+    }
+
+    #[inline]
+    pub fn is_valid(&self) -> bool {
+        (self.get_entry() & PteFlags::Valid.bits()) != 0
+    }
+
+    #[inline]
+    pub fn is_invalid(&self) -> bool {
+        !self.is_valid()
+    }
+
+    // A leaf has one or more RWX bits set.
+    #[inline]
+    pub fn is_leaf(&self) -> bool {
+        (self.get_entry() & PTE_RWX_MASK) != 0
+    }
+
+    #[inline]
+    pub fn is_branch(&self) -> bool {
+        !self.is_leaf()
+    }
+}
+
+#[repr(i64)]
+pub enum PteFlags {
+    Valid = 1 << 0,
+    Read = 1 << 1,
+    Write = 1 << 2,
+    Execute = 1 << 3,
+    User = 1 << 4,
+    Global = 1 << 5,
+    Accessed = 1 << 6,
+    Dirty = 1 << 7,
+}
+
+impl PteFlags {
+    #[inline]
+    pub const fn bits(self) -> i64 {
+        self as i64
+    }
+}
+
+pub const PTE_RWX_MASK: i64 = 0xe;
