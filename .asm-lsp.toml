@@ -1,0 +1,48 @@
+## asm-lsp project configuration
+##
+## This repo currently contains GNU-as style RISC-V assembly (`.S`) included via
+## Rust `global_asm!()`. We configure asm-lsp for GAS syntax and the RISC-V ISA.
+##
+## Notes:
+## - Diagnostics require a compiler/assembler frontend (e.g. clang). If `clang`
+##   is not installed, asm-lsp will still provide symbols/completions, but
+##   diagnostics may be missing.
+## - As you add architectures, add more `[[project]]` blocks pointing at the
+##   relevant `src/arch/<arch>/asm` directories and instruction sets.
+
+[default_config]
+assembler = "gas"
+instruction_set = "riscv"
+
+[opts]
+diagnostics = true
+default_diagnostics = true
+compiler = "clang"
+
+## Treat `.S` as preprocessed assembly, target RISC-V 64.
+## We keep flags minimal and purely descriptive for LSP diagnostics.
+compile_flags_txt = [
+  "-x", "assembler-with-cpp",
+  "-target", "riscv64-unknown-elf",
+  "-march=rv64gc",
+  "-mabi=lp64d",
+  "-c",
+]
+
+[[project]]
+path = "."
+assembler = "gas"
+instruction_set = "riscv"
+
+[project.opts]
+compiler = "clang"
+diagnostics = true
+default_diagnostics = true
+compile_flags_txt = [
+  "-x", "assembler-with-cpp",
+  "-target", "riscv64-unknown-elf",
+  "-march=rv64gc",
+  "-mabi=lp64d",
+  "-I", "src/arch/riscv64/asm",
+  "-c",
+]
