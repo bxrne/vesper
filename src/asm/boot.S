@@ -14,6 +14,14 @@ _start:
 
 	# SATP should be zero, but let's make sure
 	csrw	satp, zero
+
+	# Allow S-mode full access across the physical address space.
+	# On newer QEMU/RISC-V setups, dropping to S-mode without a PMP
+	# region can fault immediately on instruction fetch.
+	li	t0, -1
+	csrw	pmpaddr0, t0
+	li	t0, 0x0f		# TOR | R | W | X
+	csrw	pmpcfg0, t0
 .option push
 .option norelax
 	la	gp, _global_pointer

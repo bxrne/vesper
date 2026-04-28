@@ -24,6 +24,7 @@ SECTIONS
   PROVIDE(_global_pointer = .);
 
   .rodata : {
+    . = ALIGN(4096);
     PROVIDE(_rodata_start = .);
     *(.rodata .rodata.*)
     PROVIDE(_rodata_end = .);
