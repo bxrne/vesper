@@ -28,21 +28,17 @@ _start:
 	addi	a0, a0, 8
 	bltu	a0, a1, 1b
 2:
-	# Control registers, set the stack, mstatus, mepc,
-	# and mtvec to return to the main function.
+	# Set the stack, then mret into kmain in M-mode.
 	la	sp, _stack_end
-	# mstatus: MPP=11 (M-mode), MPIE=1, MIE=1
-	li	t0, (0b11 << 11) | (1 << 7) | (1 << 3)
+	# mstatus: MPP=11 (return to M-mode), MPIE=1. Leave MIE=0 — we don't
+	# have a real trap handler yet; interrupts get enabled in a later chapter.
+	li	t0, (0b11 << 11) | (1 << 7)
 	csrw	mstatus, t0
-	# Disable paging while we set up.
 	la	t1, kmain
 	csrw	mepc, t1
 	la	t2, asm_trap_vector
 	csrw	mtvec, t2
-	# Enable software, timer and external interrupts.
-	li	t3, (1 << 3) | (1 << 7) | (1 << 11)
-	csrw	mie, t3
-	# Set the return address so kmain has a place to come back to.
+	# Park here if kmain ever returns.
 	la	ra, 4f
 	mret
 
@@ -56,8 +52,10 @@ _start:
 	wfi
 	j	4b
 
-# Minimal trap vector stub. Replace with a real handler later.
+# Minimal trap vector stub. Replace with a real handler in a later chapter.
+# `mtvec` requires the base to be 4-byte aligned in direct mode.
 .section .text
+.balign 4
 .global asm_trap_vector
 asm_trap_vector:
 	mret

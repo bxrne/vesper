@@ -2,57 +2,75 @@
 #![no_main]
 
 use core::arch::{asm, global_asm};
+use core::panic::PanicInfo;
 
-// Pull in the assembly entry point. `_start` lives in boot.S and is the
-// real ELF entry; it sets up CSRs and jumps to `kmain` via `mret`.
+pub mod uart;
+
+use uart::{UART_BASE, Uart};
+
+// Pull in the assembly entry point. `_start` lives in boot.S, sets up
+// CSRs, and `mret`s into `kmain`.
 global_asm!(include_str!("asm/boot.S"));
 
-// RUST MACROS
-#[macro_export]
-macro_rules! print {
-    ($($args:tt)+) => {{}};
-}
-#[macro_export]
-macro_rules! println {
-    () => ({
-        print!("\r\n")
-    });
-    ($fmt:expr) => ({
-        print!(concat!($fmt, "\r\n"))
-    });
-    ($fmt:expr, $($args:tt)+) => ({
-        print!(concat!($fmt, "\r\n"), $($args)+)
-    });
-}
-
-// LANGUAGE STRUCTURES / FUNCTIONS
+/// Park the hart forever. Called from the panic handler and as the
+/// fallback after `kmain` returns.
 #[unsafe(no_mangle)]
-extern "C" fn eh_personality() {}
+pub extern "C" fn abort() -> ! {
+    loop {
+        unsafe { asm!("wfi") }
+    }
+}
 
 #[panic_handler]
-#[allow(unused_variables)]
-fn panic(info: &core::panic::PanicInfo) -> ! {
-    print!("Aborting: ");
-    if let Some(p) = info.location() {
-        println!("line {}, file {}: {}", p.line(), p.file(), info.message());
+fn panic(info: &PanicInfo) -> ! {
+    print!("kernel panic: ");
+    if let Some(loc) = info.location() {
+        println!(
+            "{}:{}:{}: {}",
+            loc.file(),
+            loc.line(),
+            loc.column(),
+            info.message()
+        );
     } else {
-        println!("no information available.");
+        println!("{}", info.message());
     }
     abort();
 }
 
+/// Kernel entry point. Reached from `_start` (boot.S) via `mret`.
 #[unsafe(no_mangle)]
-extern "C" fn abort() -> ! {
+pub extern "C" fn kmain() -> ! {
+    let uart = Uart::new(UART_BASE);
+    uart.init();
+
+    println!();
+    println!("vesper booted successfully!");
+
+    // Echo loop — type into the QEMU console and watch it come back.
+    // Ctrl-A, x to exit QEMU.
     loop {
-        unsafe {
-            asm!("wfi");
+        let Some(byte) = uart.get() else { continue };
+        match byte {
+            // CR -> CRLF so the prompt looks right under -nographic
+            b'\r' => println!(),
+            // backspace / DEL: erase the previous glyph
+            0x08 | 0x7f => print!("\x08 \x08"),
+            // ANSI escape sequence — for arrows the terminal sends ESC `[` X.
+            // The follow-up bytes haven't necessarily landed yet, so block.
+            0x1b => {
+                if uart.get_blocking() != b'[' {
+                    continue;
+                }
+                match uart.get_blocking() {
+                    b'A' => println!("up arrow!"),
+                    b'B' => println!("down arrow!"),
+                    b'C' => println!("right arrow!"),
+                    b'D' => println!("left arrow!"),
+                    _ => {}
+                }
+            }
+            b => print!("{}", b as char),
         }
     }
-}
-
-#[unsafe(no_mangle)]
-extern "C" fn kmain() {
-    // Main should initialize all sub-systems and get
-    // ready to start scheduling. The last thing this
-    // should do is start the timer.
 }

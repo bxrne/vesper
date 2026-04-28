@@ -3,9 +3,7 @@
 A small RISC-V 64 kernel written in Rust, following Stephen Marz's
 [osblog tutorial](https://osblog.stephenmarz.com/).
 
-## Toolchain setup
-
-You need a recent Rust toolchain and the `riscv64gc-unknown-none-elf` target:
+## Toolchain
 
 ```bash
 rustup target add riscv64gc-unknown-none-elf
@@ -13,30 +11,17 @@ rustup target add riscv64gc-unknown-none-elf
 
 The crate uses Rust 2024 edition (Rust 1.85+).
 
-## QEMU setup
+## QEMU
 
-You need `qemu-system-riscv64`. On Debian / Ubuntu:
+You need `qemu-system-riscv64`:
 
 ```bash
+# Debian / Ubuntu
 sudo apt install qemu-system-misc
-```
-
-On Arch / Manjaro:
-
-```bash
+# Arch / Manjaro
 sudo pacman -S qemu-system-riscv
-```
-
-On macOS (Homebrew):
-
-```bash
+# macOS
 brew install qemu
-```
-
-Verify:
-
-```bash
-qemu-system-riscv64 --version
 ```
 
 ## Build
@@ -46,33 +31,28 @@ cargo build              # debug
 cargo build --release    # optimised
 ```
 
-The target and linker flags are baked into [.cargo/config.toml](./.cargo/config.toml),
+The target and `-T` linker flag are baked into [.cargo/config.toml](./.cargo/config.toml),
 so a plain `cargo build` cross-compiles to RISC-V automatically.
 
-## Run under QEMU
-
-`cargo run` invokes the runner defined in `.cargo/config.toml`:
+## Run
 
 ```bash
 cargo run
 ```
 
-That expands to:
+That invokes the runner in `.cargo/config.toml`:
 
 ```
 qemu-system-riscv64 \
-    -machine virt \
-    -cpu rv64 \
-    -smp 4 \
-    -m 128M \
-    -nographic \
-    -serial mon:stdio \
+    -machine virt -cpu rv64 -smp 4 -m 128M \
+    -display none -serial stdio \
     -bios none \
     -kernel target/riscv64gc-unknown-none-elf/debug/vesper
 ```
 
-`-bios none` disables OpenSBI so our `_start` is the first thing the CPU
-runs in M-mode at `0x80000000`. With `-nographic` the QEMU monitor and
-kernel share stdio.
+`-bios none` skips OpenSBI so our `_start` runs first in M-mode at
+`0x80000000`. `-display none -serial stdio` wires the UART straight to
+your terminal — no monitor multiplexing — so keystrokes go to the
+kernel and `Ctrl-A x` quits.
 
-To exit QEMU: press `Ctrl-A` then `x`.
+To exit QEMU: **`Ctrl-A` then `x`**.
