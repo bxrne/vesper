@@ -1,6 +1,6 @@
 pub mod writer;
 
-/// Print to the kernel console. Mirrors `std::print!`.
+/// Print to the kernel console.
 #[macro_export]
 macro_rules! print {
     ($($args:tt)*) => {{
@@ -9,7 +9,8 @@ macro_rules! print {
     }};
 }
 
-/// Print to the kernel console with a trailing CRLF.
+/// Print to the kernel console with a trailing CRLF. CRLF (not just LF)
+/// because the serial terminal is in raw mode and won't translate `\n`.
 #[macro_export]
 macro_rules! println {
     () => ($crate::print!("\r\n"));

@@ -1,55 +1,63 @@
+//! Sv39 page table walker, mapper, and inverse lookup.
+//!
+//! Sv39 virtual addresses are 39 bits split into three 9-bit VPNs plus
+//! a 12-bit page offset. Each level of the walk indexes a 512-entry
+//! table with the matching VPN slice, so a full walk is at most three
+//! memory accesses.
+
 use crate::mm::alloc::page_frame::{PAGE_SIZE, deallocate, zallocate};
 use crate::mm::paging::sv39::types::{Entry, PteFlags, Table};
 use core::ptr::NonNull;
 
+/// Install a mapping `vaddr -> paddr` with the given permissions. The
+/// leaf can sit at any level (0/4 KiB, 1/2 MiB, 2/1 GiB); `level`
+/// selects which.
 pub fn map(root: &mut Table, vaddr: usize, paddr: usize, bits: PteFlags, level: usize) {
-    assert!(bits.bits() & PteFlags::RWX.bits() != 0); // make sure R|W|E were provided
+    // A leaf without R, W, or X is a "pointer" PTE in Sv39 — refusing
+    // here avoids silently producing an unwalkable hierarchy.
+    assert!(bits.bits() & PteFlags::RWX.bits() != 0);
 
-    // extract the VPN from the virtual address. The VPN is the index into the page tables at each level, so we need to split it into three 9-bit chunks.
     let vpn = [
-        // 20-12
         (vaddr >> 12) & 0x1ff,
-        // 29-21
         (vaddr >> 21) & 0x1ff,
-        // 38-30
         (vaddr >> 30) & 0x1ff,
     ];
 
-    // extract the physical address numbers
+    // PPN[2] is wider than the others (26 bits) because Sv39 supports
+    // up to 56-bit physical addresses.
     let ppn = [
-        // 20-12
         (paddr >> 12) & 0x1ff,
-        // 29-21
         (paddr >> 21) & 0x1ff,
-        // 55-30
-        (paddr >> 30) & 0x3ffffff, // stores 26 bits instead of 9
+        (paddr >> 30) & 0x3ff_ffff,
     ];
 
     let mut v = &mut root.entries[vpn[2]];
     for i in (level..2).rev() {
         if v.is_invalid() {
-            let page = zallocate(1);
-            match page {
-                Some(p) => {
-                    let addr = p.as_ptr() as usize as i64;
-                    v.set_entry((addr >> 2) | PteFlags::VALID.bits())
-                }
-                None => panic!("failed to allocate page for page table"),
-            }
+            // Allocate the next-level table on demand. Zeroing matters:
+            // unused entries must read as invalid (V=0).
+            let page = zallocate(1).expect("failed to allocate page for page table");
+            let addr = page.as_ptr() as usize as i64;
+            v.set_entry((addr >> 2) | PteFlags::VALID.bits());
         }
+        // PPN in the PTE is shifted left by 10; the address of the next
+        // table is therefore `(entry & !flags) << 2`.
         let entry = ((v.get_entry() & !0x3ff) << 2) as *mut Entry;
         v = unsafe { entry.add(vpn[i]).as_mut().unwrap() };
     }
-    // When we get here, we should be at VPN[0] and v should be pointing to
-    // our entry.
-    let entry = (ppn[2] << 28) as i64 | // PPN[2] = [53:28]
-			(ppn[1] << 19) as i64 | // PPN[1] = [27:19]
-			(ppn[0] << 10) as i64 | // PPN[0] = [18:10]
-			bits.bits() |           // Specified bits, such as User, Read, Write, etc
-			PteFlags::VALID.bits(); // Valid bit
+
+    // Layout of a leaf PTE (Sv39):
+    //   [53:28] PPN[2]  [27:19] PPN[1]  [18:10] PPN[0]  [9:0] flags
+    let entry = (ppn[2] << 28) as i64
+        | (ppn[1] << 19) as i64
+        | (ppn[0] << 10) as i64
+        | bits.bits()
+        | PteFlags::VALID.bits();
     v.set_entry(entry);
 }
 
+/// Walk the tree and free every non-leaf table. Leaves are left alone
+/// because they describe physical frames the caller still owns.
 pub fn unmap(root: &mut Table) {
     fn pte_to_addr(pte: i64) -> usize {
         ((pte & !0x3ff) << 2) as usize
@@ -60,7 +68,6 @@ pub fn unmap(root: &mut Table) {
         unsafe { deallocate(ptr) };
     }
 
-    // Start with level 2.
     for lv2 in 0..Table::len() {
         let entry_lv2 = &mut root.entries[lv2];
         if !entry_lv2.is_valid() || !entry_lv2.is_branch() {
@@ -76,7 +83,8 @@ pub fn unmap(root: &mut Table) {
                 continue;
             }
 
-            // Level 0 is a leaf-only table; free the page holding that table.
+            // Level 0 holds only leaves, so the branch at level 1
+            // points at a frame whose contents are page-table data.
             let memaddr_lv0 = pte_to_addr(entry_lv1.get_entry());
             unsafe { deallocate_addr(memaddr_lv0) };
             entry_lv1.set_entry(0);
@@ -87,36 +95,40 @@ pub fn unmap(root: &mut Table) {
     }
 }
 
+/// Software MMU walk: resolve `vaddr` to its physical address, or
+/// `None` on a missing/invalid mapping. Useful for sanity-checking
+/// page-table construction without actually flipping `satp`.
 pub fn v2p(root: &Table, vaddr: usize) -> Option<usize> {
     let vpn = [
-        // 20-12
         (vaddr >> 12) & 0x1ff,
-        // 29-21
         (vaddr >> 21) & 0x1ff,
-        // 38-30
         (vaddr >> 30) & 0x1ff,
     ];
 
     let mut v = &root.entries[vpn[2]];
     for i in (0..=2).rev() {
         if v.is_invalid() {
-            break; // page fault
-        } else if v.is_leaf() {
-            // leaves can be at any level
-            let off_mask = (1 << (12 + 9 * i)) - 1; // mask for the offset bits at this level
-            let vaddr_pgoff = vaddr & off_mask; // offset within the page
+            return None;
+        }
+        if v.is_leaf() {
+            // Superpages: the offset bits grow by 9 per level.
+            let off_mask = (1 << (12 + 9 * i)) - 1;
+            let vaddr_pgoff = vaddr & off_mask;
             let addr = ((v.get_entry() << 2) as usize) & !off_mask;
             return Some(addr | vaddr_pgoff);
         }
-        let entry = ((v.get_entry() & !0x3ff) << 2) as *const Entry;
         if i == 0 {
+            // Branch PTE at level 0 is malformed (no level -1 to walk).
             break;
         }
+        let entry = ((v.get_entry() & !0x3ff) << 2) as *const Entry;
         v = unsafe { entry.add(vpn[i - 1]).as_ref().unwrap() };
     }
     None
 }
 
+/// Identity-map every page in `[start, end)`. Both bounds must already
+/// be page-aligned — the caller usually rounds linker symbols outward.
 pub fn id_map_range(root: &mut Table, start: usize, end: usize, bits: PteFlags) {
     assert!(start.is_multiple_of(PAGE_SIZE));
     assert!(end.is_multiple_of(PAGE_SIZE));

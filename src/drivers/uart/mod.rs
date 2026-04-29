@@ -1,7 +1,6 @@
-//! NS16550A UART driver.
+//! NS16550A UART driver for the QEMU `virt` machine.
 //!
-//! The QEMU `virt` machine exposes a 16550-compatible UART at MMIO base
-//! `0x1000_0000`. Register offsets (8-bit, with `DLAB = 0`):
+//! Register offsets (8-bit, with `DLAB = 0`):
 //!
 //! | offset | read       | write       |
 //! |-------:|------------|-------------|
@@ -12,12 +11,13 @@
 //! | 4      | MCR        | MCR         |
 //! | 5      | LSR        |             |
 //!
-//! For now we drive the UART by polling — `kmain` is the only consumer
-//! and no other harts run, so we don't need a lock.
+//! Polled access only — there is no trap handler yet, and only one hart
+//! is running, so locking would just be ceremony.
+
 use core::fmt;
 use core::ptr::{read_volatile, write_volatile};
 
-/// Base address of the NS16550A UART on the QEMU `virt` machine.
+/// MMIO base of the NS16550A on the QEMU `virt` machine.
 pub const UART_BASE: usize = 0x1000_0000;
 
 const RBR_THR: usize = 0;
@@ -33,23 +33,21 @@ const LCR_8BITS: u8 = 0b11;
 const FCR_ENABLE: u8 = 0b1;
 const IER_RX_ENABLE: u8 = 0b1;
 
-/// A handle to a 16550-compatible UART.
-///
-/// The struct is zero-sized in spirit — it just remembers the MMIO base
-/// — so it's cheap to construct on demand inside `print!`.
+/// Handle to a 16550-compatible UART. Holds only the MMIO base, so
+/// constructing one inside `print!` is essentially free.
 pub struct Uart {
     base: *mut u8,
 }
 
 impl Uart {
-    /// Construct a UART handle for the given MMIO base address.
     pub const fn new(base: usize) -> Self {
         Self {
             base: base as *mut u8,
         }
     }
 
-    /// Configure the UART: 8N1, FIFO enabled, RX interrupt enabled.
+    /// 8N1, FIFO on, RX interrupt enabled. RX-IRQ is harmless while
+    /// MIE is off and saves a register write once interrupts are wired.
     pub fn init(&self) {
         unsafe {
             self.write(LCR, LCR_8BITS);
@@ -58,7 +56,8 @@ impl Uart {
         }
     }
 
-    /// Block until the transmit holding register is empty, then write a byte.
+    /// Block until the THR is empty before pushing a byte; otherwise
+    /// fast back-to-back writes drop characters silently.
     pub fn put(&self, byte: u8) {
         unsafe {
             while self.read(LSR) & LSR_THR_EMPTY == 0 {}
@@ -66,7 +65,7 @@ impl Uart {
         }
     }
 
-    /// Non-blocking receive. Returns `None` if no byte is ready.
+    /// Non-blocking receive. `None` means the RX FIFO is empty right now.
     pub fn get(&self) -> Option<u8> {
         unsafe {
             if self.read(LSR) & LSR_DATA_READY == 0 {
@@ -77,7 +76,6 @@ impl Uart {
         }
     }
 
-    /// Block until a byte arrives, then return it.
     pub fn get_blocking(&self) -> u8 {
         loop {
             if let Some(b) = self.get() {

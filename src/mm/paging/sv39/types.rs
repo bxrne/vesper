@@ -1,6 +1,9 @@
-use core::ops::{BitOr, BitOrAssign};
-use core::ptr::NonNull;
+//! Sv39 page table primitives.
 
+use core::ops::{BitOr, BitOrAssign};
+
+/// 512-entry page table — exactly one 4 KiB page so a table aligns
+/// cleanly to a frame boundary.
 #[repr(C)]
 pub struct Table {
     pub entries: [Entry; 512],
@@ -11,13 +14,11 @@ impl Table {
     pub const fn len() -> usize {
         512
     }
-
-    #[inline]
-    pub fn as_mut_ptr(&mut self) -> NonNull<Self> {
-        NonNull::from(self)
-    }
 }
 
+/// Sv39 page table entry. Stored as `i64` because the walker uses
+/// arithmetic shifts when sign-extending PPN bits — staying signed
+/// keeps the masks consistent.
 #[repr(transparent)]
 #[derive(Copy, Clone)]
 pub struct Entry {
@@ -45,7 +46,8 @@ impl Entry {
         !self.is_valid()
     }
 
-    // A leaf has one or more RWX bits set.
+    /// In Sv39 a PTE with any of R/W/X set is a leaf; otherwise it
+    /// points at the next-level table.
     #[inline]
     pub fn is_leaf(&self) -> bool {
         (self.get_entry() & PteFlags::RWX.bits()) != 0
@@ -73,7 +75,8 @@ impl PteFlags {
     pub const ACCESSED: Self = Self(1 << 6);
     pub const DIRTY: Self = Self(1 << 7);
 
-    /// Mask of the RWX bits (leaf indicator).
+    /// Combined R|W|X mask — testing a PTE against this is the
+    /// canonical leaf check.
     pub const RWX: Self = Self(0xe);
 
     #[inline]

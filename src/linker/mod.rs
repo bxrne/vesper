@@ -1,4 +1,8 @@
-use core::ptr::addr_of;
+//! Accessors for symbols defined in `src/lds/virt.lds`.
+//!
+//! Linker symbols don't have a value the way ordinary statics do — the
+//! address of the symbol *is* the value. Each helper returns that
+//! address as a plain `usize`.
 
 unsafe extern "C" {
     static _text_start: u8;
@@ -11,65 +15,60 @@ unsafe extern "C" {
     static _bss_end: u8;
     static _stack_start: u8;
     static _stack_end: u8;
-    static _heap_start: usize;
-    static _heap_size: usize;
+    static _heap_start: u8;
+    static _heap_size: u8;
     static _memory_end: u8;
 }
 
 #[inline]
-fn sym_addr(sym: &'static u8) -> usize {
-    sym as *const u8 as usize
-}
-
-#[inline]
 pub fn text_start() -> usize {
-    unsafe { sym_addr(&_text_start) }
+    &raw const _text_start as usize
 }
 #[inline]
 pub fn text_end() -> usize {
-    unsafe { sym_addr(&_text_end) }
+    &raw const _text_end as usize
 }
 #[inline]
 pub fn rodata_start() -> usize {
-    unsafe { sym_addr(&_rodata_start) }
+    &raw const _rodata_start as usize
 }
 #[inline]
 pub fn rodata_end() -> usize {
-    unsafe { sym_addr(&_rodata_end) }
+    &raw const _rodata_end as usize
 }
 #[inline]
 pub fn data_start() -> usize {
-    unsafe { sym_addr(&_data_start) }
+    &raw const _data_start as usize
 }
 #[inline]
 pub fn data_end() -> usize {
-    unsafe { sym_addr(&_data_end) }
+    &raw const _data_end as usize
 }
 #[inline]
 pub fn bss_start() -> usize {
-    unsafe { sym_addr(&_bss_start) }
+    &raw const _bss_start as usize
 }
 #[inline]
 pub fn bss_end() -> usize {
-    unsafe { sym_addr(&_bss_end) }
+    &raw const _bss_end as usize
 }
 #[inline]
 pub fn stack_start() -> usize {
-    unsafe { sym_addr(&_stack_start) }
+    &raw const _stack_start as usize
 }
 #[inline]
 pub fn stack_end() -> usize {
-    unsafe { sym_addr(&_stack_end) }
+    &raw const _stack_end as usize
 }
 #[inline]
 pub fn heap_start() -> usize {
-    addr_of!(_heap_start) as *const usize as usize
+    &raw const _heap_start as usize
 }
 #[inline]
 pub fn heap_size() -> usize {
-    addr_of!(_heap_size) as *const usize as usize
+    &raw const _heap_size as usize
 }
 #[inline]
 pub fn memory_end() -> usize {
-    unsafe { sym_addr(&_memory_end) }
+    &raw const _memory_end as usize
 }
