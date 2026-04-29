@@ -1,3 +1,6 @@
+use core::arch::asm;
+use core::hint::black_box;
+
 use crate::arch;
 use crate::drivers::plic;
 use crate::drivers::uart::{UART_BASE, Uart};
@@ -5,6 +8,7 @@ use crate::linker;
 use crate::mm::alloc::page_frame::{self, PAGE_SIZE};
 use crate::mm::paging::sv39::map::id_map_range;
 use crate::mm::paging::sv39::types::{PteFlags, Table};
+use crate::process;
 use crate::println;
 
 #[inline]
@@ -89,15 +93,46 @@ pub extern "C" fn kinit() -> ! {
 }
 
 /// S-mode entry point. Paging is live, interrupts are unmasked, and
-/// every device input is delivered through the M-mode trap handler —
-/// so this hart has nothing to do but `wfi` and let traps drive the
-/// kernel.
+/// every device input is delivered through the M-mode trap handler.
+/// Spawn the init kernel thread, then idle — the next timer tick will
+/// preempt this idle path and hand the CPU to init.
 #[unsafe(no_mangle)]
 pub extern "C" fn skmain() -> ! {
     println!();
     println!("paging enabled (Sv39), now in S-mode");
     println!("interrupts enabled — type to echo:");
+
+    process::spawn_kernel(init_process).expect("failed to spawn init");
+    println!("spawned init kernel thread, awaiting first timer tick");
+
     loop {
         arch::wfi();
     }
+}
+
+/// PID 1: a placeholder kernel thread that periodically issues a test
+/// syscall. Real workloads will replace this once user-mode and ELF
+/// loading land.
+fn init_process() -> ! {
+    let mut i: usize = 0;
+    loop {
+        // black_box prevents the optimiser from collapsing the loop.
+        i = black_box(i).wrapping_add(1);
+        if i > 1_000_000 {
+            unsafe { syscall(1) };
+            i = 0;
+        }
+    }
+}
+
+/// Issue an `ecall` with `num` in `a0`. Returns the kernel's value of
+/// `a0` after the call (currently unused — placeholder for the real
+/// syscall ABI).
+#[inline]
+unsafe fn syscall(num: usize) -> usize {
+    let ret;
+    unsafe {
+        asm!("ecall", inlateout("a0") num => ret, options(nostack));
+    }
+    ret
 }

@@ -11,6 +11,7 @@ use crate::arch::riscv64::trap_frame::TrapFrame;
 use crate::drivers::plic;
 use crate::drivers::uart::{UART_BASE, Uart};
 use crate::mm::alloc::page_frame;
+use crate::process;
 use crate::{print, println};
 
 unsafe extern "C" {
@@ -20,6 +21,16 @@ unsafe extern "C" {
 /// 16 KiB stack for the trap handler — generous enough that nested
 /// `println!` formatting won't run off the end.
 const TRAP_STACK_PAGES: usize = 4;
+
+/// Top of the M-mode trap stack, populated by [`install`]. Exposed so
+/// per-process TrapFrames can point their `trap_stack` field here —
+/// only one trap is in flight at a time on this hart, so sharing is
+/// safe.
+static mut TRAP_STACK_TOP: *mut u8 = core::ptr::null_mut();
+
+pub fn trap_stack_top() -> *mut u8 {
+    unsafe { TRAP_STACK_TOP }
+}
 
 const MIE_MTIE: usize = 1 << 7; // machine timer
 const MIE_MEIE: usize = 1 << 11; // machine external (PLIC)
@@ -50,6 +61,7 @@ pub unsafe fn install(satp: usize) {
 
     let frame_ptr = &raw mut TRAP_FRAME;
     unsafe {
+        TRAP_STACK_TOP = stack_top;
         (*frame_ptr).satp = satp;
         (*frame_ptr).trap_stack = stack_top;
         (*frame_ptr).hartid = 0;
@@ -76,7 +88,7 @@ extern "C" fn m_trap(
     cause: usize,
     hart: usize,
     _status: usize,
-    _frame: &mut TrapFrame,
+    frame: &mut TrapFrame,
 ) -> usize {
     // The MSB of mcause distinguishes async (interrupt) from sync
     // (exception); the low 12 bits give the cause number.
@@ -87,11 +99,19 @@ extern "C" fn m_trap(
     if is_async {
         match cause_num {
             3 => println!("machine software interrupt cpu#{}", hart),
-            7 => unsafe {
-                // Rearm the next tick. No print — the timer fires at 1 Hz
-                // and would otherwise drown out everything else.
-                CLINT_MTIMECMP.write_volatile(CLINT_MTIME.read_volatile() + TIMER_TICK);
-            },
+            7 => {
+                // Timer doubles as the context-switch tick: rearm,
+                // then ask the scheduler for the next thread to run.
+                unsafe {
+                    CLINT_MTIMECMP.write_volatile(CLINT_MTIME.read_volatile() + TIMER_TICK);
+                }
+                if let Some((next_frame, next_pc)) = process::schedule(return_pc) {
+                    // Point mscratch at the new frame so the trap
+                    // vector restores from it on the way out.
+                    unsafe { asm!("csrw mscratch, {}", in(reg) next_frame as usize) };
+                    return_pc = next_pc;
+                }
+            }
             11 => handle_external(),
             _ => panic!("unhandled async trap cpu#{} cause {}", hart, cause_num),
         }
@@ -101,14 +121,11 @@ extern "C" fn m_trap(
                 "illegal instruction cpu#{} epc=0x{:x} tval=0x{:x}",
                 hart, epc, tval
             ),
-            8 => {
-                println!("ecall from U-mode cpu#{} epc=0x{:x}", hart, epc);
-                // Skip past the ecall so we don't immediately re-trap.
-                return_pc += 4;
-            }
-            9 => {
-                println!("ecall from S-mode cpu#{} epc=0x{:x}", hart, epc);
-                return_pc += 4;
+            // Ecalls from both U and S map to the same syscall
+            // dispatcher; only the privilege the request came from
+            // differs, and the kernel doesn't yet care.
+            8 | 9 => {
+                return_pc = process::do_syscall(epc, frame);
             }
             // M-mode ecalls are unexpected: nothing in this kernel
             // executes `ecall` while running in M-mode.
