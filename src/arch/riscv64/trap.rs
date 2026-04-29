@@ -6,10 +6,12 @@
 //! without any mapping ceremony.
 
 use core::arch::asm;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::arch::riscv64::trap_frame::TrapFrame;
 use crate::drivers::plic;
 use crate::drivers::uart::{UART_BASE, Uart};
+use crate::drivers::virtio;
 use crate::mm::alloc::page_frame;
 use crate::process;
 use crate::{print, println};
@@ -44,6 +46,22 @@ const TIMER_TICK: u64 = 10_000_000;
 // A single hart only — once SMP lands this becomes a per-hart array
 // indexed by mhartid.
 static mut TRAP_FRAME: TrapFrame = TrapFrame::empty();
+static ACCESS_FAULT_SEEN: AtomicBool = AtomicBool::new(false);
+
+#[inline]
+pub fn clear_access_fault() {
+    ACCESS_FAULT_SEEN.store(false, Ordering::Relaxed);
+}
+
+#[inline]
+pub fn take_access_fault() -> bool {
+    ACCESS_FAULT_SEEN.swap(false, Ordering::Relaxed)
+}
+
+#[inline]
+pub fn set_mmio_guard(active: bool) {
+    let _ = active;
+}
 
 /// Allocate a trap stack, point the static TrapFrame at it, and program
 /// `mscratch` / `mtvec` so the next trap reaches `m_trap_vector`.
@@ -144,6 +162,12 @@ extern "C" fn m_trap(
                 );
                 return_pc += 4;
             }
+            // Used by guarded MMIO probing paths: skip the faulting load/store
+            // and let caller detect via ACCESS_FAULT_SEEN.
+            5 | 7 => {
+                ACCESS_FAULT_SEEN.store(true, Ordering::Relaxed);
+                return_pc += 4;
+            }
             15 => {
                 println!(
                     "store page fault cpu#{} epc=0x{:x} tval=0x{:x}",
@@ -168,6 +192,7 @@ fn handle_external() {
     };
     match id {
         plic::UART0_IRQ => echo_uart(),
+        _ if virtio::device::pending_by_irq(id) => {}
         _ => println!("non-UART external interrupt: {}", id),
     }
     plic::complete(id);

@@ -167,7 +167,7 @@ fn exit_current() -> Option<u16> {
 pub fn do_syscall(epc: usize, frame: &mut TrapFrame) -> usize {
     let num = frame.regs[10]; // a0
     match num {
-        1 => println!("test syscall"),
+        1 => {}
         93 => {
             // Exit: drop the current process and pull the next one in
             // *immediately*, otherwise the trap vector would resume

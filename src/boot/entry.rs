@@ -4,12 +4,13 @@ use core::hint::black_box;
 use crate::arch;
 use crate::drivers::plic;
 use crate::drivers::uart::{UART_BASE, Uart};
+use crate::drivers::virtio;
 use crate::linker;
 use crate::mm::alloc::page_frame::{self, PAGE_SIZE};
 use crate::mm::paging::sv39::map::id_map_range;
 use crate::mm::paging::sv39::types::{PteFlags, Table};
 use crate::process;
-use crate::println;
+use crate::{print, println};
 
 #[inline]
 fn align_down(addr: usize, align: usize) -> usize {
@@ -73,6 +74,12 @@ pub extern "C" fn kinit() -> ! {
     // explicit mapping or the first `print!` after enabling paging faults.
     let uart_base = align_down(UART_BASE, PAGE_SIZE);
     map_section(root, uart_base, uart_base + PAGE_SIZE, rw);
+    map_section(
+        root,
+        virtio::spec::MMIO_VIRTIO_START,
+        virtio::spec::MMIO_VIRTIO_END + virtio::spec::MMIO_VIRTIO_STRIDE,
+        rw,
+    );
 
     let satp = arch::make_satp_sv39(root_table_addr);
 
@@ -86,6 +93,11 @@ pub extern "C" fn kinit() -> ! {
     plic::set_threshold(0);
     plic::enable(plic::UART0_IRQ);
     plic::set_priority(plic::UART0_IRQ, 1);
+    virtio::bus::probe();
+    for irq in virtio::device::configured_irqs().into_iter().flatten() {
+        plic::enable(irq);
+        plic::set_priority(irq, 1);
+    }
 
     arch::enable_interrupts();
 
@@ -101,6 +113,30 @@ pub extern "C" fn skmain() -> ! {
     println!();
     println!("paging enabled (Sv39), now in S-mode");
     println!("interrupts enabled — type to echo:");
+    println!("Testing block driver.");
+    if let Some(dev) = virtio::device::first_block_device() {
+        if let Some(buffer) = page_frame::allocate(1) {
+            let ptr = buffer.as_ptr();
+            let ok = virtio::device::block_read(dev, ptr, 512, 0);
+            if ok {
+                for i in 0..48usize {
+                    let b = unsafe { ptr.add(i).read() };
+                    print!(" {:02x}", b);
+                    if (i + 1) % 24 == 0 {
+                        println!();
+                    }
+                }
+            } else {
+                println!("block read failed");
+            }
+            unsafe { page_frame::deallocate(buffer) };
+        } else {
+            println!("failed to allocate test buffer");
+        }
+    } else {
+        println!("no block device discovered");
+    }
+    println!("Block driver done");
 
     process::spawn_kernel(init_process).expect("failed to spawn init");
     println!("spawned init kernel thread, awaiting first timer tick");
