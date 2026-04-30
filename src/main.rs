@@ -5,6 +5,8 @@ pub mod arch;
 pub mod boot;
 pub mod console;
 pub mod drivers;
+pub mod exec;
+pub mod fs;
 pub mod linker;
 pub mod mm;
 pub mod process;

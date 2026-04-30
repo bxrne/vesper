@@ -5,6 +5,8 @@ use crate::arch;
 use crate::drivers::plic;
 use crate::drivers::uart::{UART_BASE, Uart};
 use crate::drivers::virtio;
+use crate::exec::elf;
+use crate::fs::minix3;
 use crate::linker;
 use crate::mm::alloc::page_frame::{self, PAGE_SIZE};
 use crate::mm::paging::sv39::map::id_map_range;
@@ -138,6 +140,8 @@ pub extern "C" fn skmain() -> ! {
     }
     println!("Block driver done");
 
+    test_minix3();
+
     process::spawn_kernel(init_process).expect("failed to spawn init");
     println!("spawned init kernel thread, awaiting first timer tick");
 
@@ -171,4 +175,148 @@ unsafe fn syscall(num: usize) -> usize {
         asm!("ecall", inlateout("a0") num => ret, options(nostack));
     }
     ret
+}
+
+/// Inode/size of a userland ELF the build system might have copied
+/// onto the disk. If the disk hasn't been formatted with mkfs.minix
+/// (the default `hdd.dsk` is just a 32 MiB hole) we skip silently.
+const ELF_TEST_INODE: u32 = 0;
+const ELF_TEST_MAX_SIZE: usize = 64 * 1024;
+
+/// Probe `dev 0` for a Minix 3 filesystem. If we find one, dump the
+/// superblock summary and walk the root directory; this exercises the
+/// chapter-10 reader against a real disk image.
+fn test_minix3() {
+    let Some(dev) = virtio::device::first_block_device() else {
+        return;
+    };
+
+    println!();
+    println!("Probing device {} for Minix 3 filesystem...", dev);
+    let fs = match minix3::Fs::mount(dev) {
+        Ok(fs) => fs,
+        Err(minix3::FsError::BadMagic) => {
+            println!(
+                "  no Minix 3 filesystem (magic mismatch). Format with `mkfs.minix -3` to test."
+            );
+            return;
+        }
+        Err(e) => {
+            println!("  mount failed: {:?}", e);
+            return;
+        }
+    };
+
+    println!(
+        "  superblock: ninodes={} zones={} block_size={} first_data_zone={}",
+        fs.sb.ninodes, fs.sb.zones, fs.sb.block_size, fs.sb.first_data_zone
+    );
+
+    let root = match fs.read_inode(minix3::ROOT_INODE) {
+        Ok(i) => i,
+        Err(e) => {
+            println!("  read root inode failed: {:?}", e);
+            return;
+        }
+    };
+    println!(
+        "  root inode: mode=0o{:o} size={} zones[0]={}",
+        root.mode, root.size, root.zones[0]
+    );
+
+    if !root.is_dir() {
+        println!("  root inode is not a directory; aborting");
+        return;
+    }
+
+    list_dir(&fs, &root);
+
+    if ELF_TEST_INODE != 0 {
+        test_elf(&fs);
+    }
+}
+
+/// Read up to one block of directory entries and print each name.
+/// Bigger directories are truncated; the chapter-10 reader can handle
+/// them, this just keeps boot output short.
+fn list_dir(fs: &minix3::Fs, dir: &minix3::Inode) {
+    let buf_pages = page_frame::zallocate(1).expect("OOM listing dir");
+    // SAFETY: one full page is at least BLOCK_SIZE bytes, plenty for
+    // BLOCK_SIZE / DIRENT_SIZE = 16 entries.
+    let slice = unsafe {
+        core::slice::from_raw_parts_mut(buf_pages.as_ptr(), minix3::BLOCK_SIZE as usize)
+    };
+    let read = match fs.read_file(dir, 0, slice) {
+        Ok(n) => n,
+        Err(e) => {
+            println!("  list_dir failed: {:?}", e);
+            unsafe { page_frame::deallocate(buf_pages) };
+            return;
+        }
+    };
+    let entries = read / minix3::DIRENT_SIZE;
+    println!("  /  ({} entries):", entries);
+    for i in 0..entries {
+        let off = i * minix3::DIRENT_SIZE;
+        let de = unsafe { &*(slice.as_ptr().add(off) as *const minix3::DirEntry) };
+        if de.inode == 0 {
+            continue;
+        }
+        println!("    inode {:>4}  {}", de.inode, de.name_str());
+    }
+    unsafe { page_frame::deallocate(buf_pages) };
+}
+
+/// Read the ELF at `ELF_TEST_INODE`, validate it, and dump the
+/// program-header summary. This is the chapter-11 entry point — once a
+/// real userland binary lives on the disk we can swap the print loop
+/// for a `process::spawn_user` call.
+fn test_elf(fs: &minix3::Fs) {
+    println!("  loading ELF at inode {}...", ELF_TEST_INODE);
+    let inode = match fs.read_inode(ELF_TEST_INODE) {
+        Ok(i) => i,
+        Err(e) => {
+            println!("    read inode failed: {:?}", e);
+            return;
+        }
+    };
+    let want = core::cmp::min(inode.size as usize, ELF_TEST_MAX_SIZE);
+    let pages = want.div_ceil(PAGE_SIZE);
+    let Some(buf) = page_frame::zallocate(pages) else {
+        println!("    OOM allocating ELF buffer");
+        return;
+    };
+    let slice = unsafe { core::slice::from_raw_parts_mut(buf.as_ptr(), want) };
+    let got = match fs.read_file(&inode, 0, slice) {
+        Ok(n) => n,
+        Err(e) => {
+            println!("    read_file failed: {:?}", e);
+            unsafe { page_frame::deallocate(buf) };
+            return;
+        }
+    };
+    if got != want {
+        println!("    short read: wanted {} got {}", want, got);
+        unsafe { page_frame::deallocate(buf) };
+        return;
+    }
+    match elf::parse(&slice[..got]) {
+        Ok(hdr) => {
+            println!(
+                "    ELF ok: entry=0x{:x} phnum={} machine=0x{:x}",
+                hdr.entry_addr, hdr.phnum, hdr.machine
+            );
+            for (i, ph) in elf::program_headers(&slice[..got], hdr).enumerate() {
+                if ph.seg_type != elf::PT_LOAD {
+                    continue;
+                }
+                println!(
+                    "    PH#{}: vaddr=0x{:x} filesz={} memsz={} flags=0x{:x}",
+                    i, ph.vaddr, ph.filesz, ph.memsz, ph.flags
+                );
+            }
+        }
+        Err(e) => println!("    elf parse: {:?}", e),
+    }
+    unsafe { page_frame::deallocate(buf) };
 }
