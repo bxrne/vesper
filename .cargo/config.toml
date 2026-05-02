@@ -3,4 +3,24 @@ target = "riscv64gc-unknown-none-elf"
 rustflags = ["-Clink-arg=-Tsrc/lds/virt.lds"]
 
 [target.riscv64gc-unknown-none-elf]
-runner = "qemu-system-riscv64 -machine virt -cpu rv64 -smp 4 -m 128M -display none -serial stdio -bios none -drive file=hdd.dsk,if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 -kernel"
+runner = [
+    "sh",
+    "-c",
+    """
+if [ ! -f hdd.dsk ]; then
+    dd if=/dev/zero of=hdd.dsk bs=1M count=32 status=none
+    if command -v mkfs.minix >/dev/null 2>&1; then
+        mkfs.minix -3 hdd.dsk >/dev/null
+    else
+        echo "mkfs.minix not found; leaving disk image unformatted." >&2
+        echo "Install util-linux to format as Minix 3."             >&2
+    fi
+fi
+exec qemu-system-riscv64 -machine virt -cpu rv64 -smp 4 -m 128M \
+    -display none -serial stdio -bios none \
+    -drive file=hdd.dsk,if=none,format=raw,id=hd0 \
+    -device virtio-blk-device,drive=hd0 \
+    -kernel "$1"
+""",
+    "sh",
+]

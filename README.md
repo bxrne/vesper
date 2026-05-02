@@ -62,16 +62,10 @@ so a plain `cargo build` cross-compiles to RISC-V automatically.
 ## Disk Image
 
 The QEMU runner is configured with a `virtio-blk-device` backed by
-`hdd.dsk`. Create it first if missing:
-
-```bash
-chmod +x ./mkhdd.sh
-./mkhdd.sh
-```
-
-`mkhdd.sh` allocates a 32 MiB image and, if `mkfs.minix` is on
-`PATH`, formats it as a Minix 3 filesystem so the chapter-10 reader
-can mount it on boot.
+`hdd.dsk`. The runner in [.cargo/config.toml](./.cargo/config.toml)
+auto-creates `hdd.dsk` on first `cargo run`: it allocates a 32 MiB
+image and, if `mkfs.minix` is on `PATH`, formats it as a Minix 3
+filesystem so the chapter-10 reader can mount it on boot.
 
 ## Run
 
