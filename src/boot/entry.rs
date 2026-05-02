@@ -243,9 +243,8 @@ fn list_dir(fs: &minix3::Fs, dir: &minix3::Inode) {
     let buf_pages = page_frame::zallocate(1).expect("OOM listing dir");
     // SAFETY: one full page is at least BLOCK_SIZE bytes, plenty for
     // BLOCK_SIZE / DIRENT_SIZE = 16 entries.
-    let slice = unsafe {
-        core::slice::from_raw_parts_mut(buf_pages.as_ptr(), minix3::BLOCK_SIZE as usize)
-    };
+    let slice =
+        unsafe { core::slice::from_raw_parts_mut(buf_pages.as_ptr(), minix3::BLOCK_SIZE as usize) };
     let read = match fs.read_file(dir, 0, slice) {
         Ok(n) => n,
         Err(e) => {

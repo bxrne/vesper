@@ -105,7 +105,9 @@ pub fn program_headers<'a>(
     (0..phnum).map(move |i| {
         // Safe because `parse` already bounds-checked phoff..ph_end.
         unsafe {
-            &*(buf.as_ptr().add(phoff + i * core::mem::size_of::<ProgramHeader>())
+            &*(buf
+                .as_ptr()
+                .add(phoff + i * core::mem::size_of::<ProgramHeader>())
                 as *const ProgramHeader)
         }
     })
